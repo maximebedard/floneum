@@ -1,5 +1,5 @@
 use anyhow::bail;
-use hf_hub::{Repo, RepoType};
+
 use httpdate::parse_http_date;
 use reqwest::header::{HeaderValue, CONTENT_LENGTH, LAST_MODIFIED, RANGE};
 use reqwest::{Response, StatusCode, Url};
@@ -157,64 +157,73 @@ impl Cache {
                 revision,
                 file,
             } => {
-                let token = self.huggingface_token.clone().or_else(huggingface_token);
+                #[cfg(feature = "default-tls")]
+                {
+                    let token = self.huggingface_token.clone().or_else(|| {
+                        let cache = hf_hub::Cache::default();
+                        cache.token().or_else(|| std::env::var("HF_TOKEN").ok())
+                    });
 
-                let path = self.location.join(model_id).join(revision);
-                let complete_download = path.join(file);
+                    let path = self.location.join(model_id).join(revision);
+                    let complete_download = path.join(file);
 
-                let api = hf_hub::api::sync::Api::new()?;
-                let repo = Repo::with_revision(
-                    model_id.to_string(),
-                    RepoType::Model,
-                    revision.to_string(),
-                );
-                let api = api.repo(repo);
-                let url = api.url(file);
-                let url = Url::from_str(&url)?;
-                let client = reqwest::Client::new();
-                let response = client
-                    .head(url.clone())
-                    .with_authorization_header(token.clone())
-                    .send()
-                    .await;
+                    let api = hf_hub::api::sync::Api::new()?;
+                    let repo = hf_hub::Repo::with_revision(
+                        model_id.to_string(),
+                        hf_hub::RepoType::Model,
+                        revision.to_string(),
+                    );
+                    let api = api.repo(repo);
+                    let url = api.url(file);
+                    let url = Url::from_str(&url)?;
+                    let client = reqwest::Client::new();
+                    let response = client
+                        .head(url.clone())
+                        .with_authorization_header(token.clone())
+                        .send()
+                        .await;
 
-                if complete_download.exists() {
-                    let metadata = tokio::fs::metadata(&complete_download).await?;
-                    let file_last_modified = metadata.modified()?;
-                    // If the server says the file hasn't been modified since we downloaded it, we can use the local file
-                    if let Some(last_updated) = response
-                        .as_ref()
-                        .ok()
-                        .and_then(|response| response.headers().get(LAST_MODIFIED))
-                        .and_then(|last_updated| last_updated.to_str().ok())
-                        .and_then(|s| parse_http_date(s).ok())
-                    {
-                        if last_updated <= file_last_modified {
+                    if complete_download.exists() {
+                        let metadata = tokio::fs::metadata(&complete_download).await?;
+                        let file_last_modified = metadata.modified()?;
+                        // If the server says the file hasn't been modified since we downloaded it, we can use the local file
+                        if let Some(last_updated) = response
+                            .as_ref()
+                            .ok()
+                            .and_then(|response| response.headers().get(LAST_MODIFIED))
+                            .and_then(|last_updated| last_updated.to_str().ok())
+                            .and_then(|s| parse_http_date(s).ok())
+                        {
+                            if last_updated <= file_last_modified {
+                                return Ok(complete_download);
+                            }
+                        } else {
+                            // Or if we are offline, we can use the local file
                             return Ok(complete_download);
                         }
-                    } else {
-                        // Or if we are offline, we can use the local file
-                        return Ok(complete_download);
                     }
+                    let incomplete_download = path.join(format!("{}.partial", file));
+
+                    tracing::trace!("Downloading into {:?}", incomplete_download);
+
+                    download_into(
+                        url,
+                        &incomplete_download,
+                        response?,
+                        client,
+                        token,
+                        progress,
+                    )
+                    .await?;
+
+                    // Rename the file to remove the .partial extension
+                    tokio::fs::rename(&incomplete_download, &complete_download).await?;
+
+                    Ok(complete_download)
                 }
-                let incomplete_download = path.join(format!("{}.partial", file));
 
-                tracing::trace!("Downloading into {:?}", incomplete_download);
-
-                download_into(
-                    url,
-                    &incomplete_download,
-                    response?,
-                    client,
-                    token,
-                    progress,
-                )
-                .await?;
-
-                // Rename the file to remove the .partial extension
-                tokio::fs::rename(&incomplete_download, &complete_download).await?;
-
-                Ok(complete_download)
+                #[cfg(not(feature = "default-tls"))]
+                panic!("not supported with rustls");
             }
             FileSource::Local(path) => Ok(path.clone()),
         }
@@ -339,9 +348,4 @@ async fn downloads_work() {
     .unwrap();
     assert!(file.exists());
     tokio::fs::remove_file(file).await.unwrap();
-}
-
-fn huggingface_token() -> Option<String> {
-    let cache = hf_hub::Cache::default();
-    cache.token().or_else(|| std::env::var("HF_TOKEN").ok())
 }

@@ -93,7 +93,7 @@ features = ["sound", "language", "vision", "remote", "surrealdb"]
 workspace = true
 
 [features]
-full = ["language", "vision", "sound", "surrealdb"]
+full = ["language", "vision", "sound", "surrealdb", "default-tls"]
 cuda = ["kalosm-language?/cublas", "kalosm-vision?/cublas", "kalosm-sound?/cuda"]
 mkl = ["kalosm-language?/mkl", "kalosm-vision?/mkl", "kalosm-sound?/mkl"]
 language = ["kalosm-language"]
@@ -102,6 +102,8 @@ sound = ["kalosm-sound"]
 surrealdb = ["dep:surrealdb"]
 vision = ["kalosm-vision"]
 remote = ["kalosm-language?/remote"]
+default-tls = ["kalosm-common/default-tls", "kalosm-language/default-tls"]
+rustls-tls = ["kalosm-common/rustls-tls", "kalosm-language/rustls-tls"]
 
 [[example]]
 name = "axum"
